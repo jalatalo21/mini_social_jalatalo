@@ -111,11 +111,12 @@ def feed():
 
     current_user_id = session.get('user_id')
     params = []
-    recent_reactions = []
+    recent_reactions = [] # Helper lists for the new elements
     recent_comments = []
     people_nearby = []
 
     if current_user_id:
+        # Find users who reacted
         recent_reactions = query_db("""
             SELECT u.username, p.id AS post_id
             FROM reactions r
@@ -126,6 +127,7 @@ def feed():
             LIMIT 2
         """, (current_user_id, current_user_id)) or []
 
+        # Find users who commented
         recent_comments = query_db("""
             SELECT u.username, p.id AS post_id
             FROM comments c
@@ -136,6 +138,7 @@ def feed():
             LIMIT 2
         """, (current_user_id, current_user_id)) or []
 
+    # Find top 5 most active cities from users' location
     active_cities = query_db("""
         SELECT MIN(location) AS location, COUNT(*) AS activity_count
         FROM (
@@ -168,6 +171,7 @@ def feed():
         )
 
         if current_user and current_user['location'] and current_user['location'].strip():
+            # Find users in the same location as current_user
             people_nearby = query_db("""
                 SELECT id, username, location
                 FROM users
@@ -265,7 +269,7 @@ def feed():
                            per_page=POSTS_PER_PAGE, # Pass items per page
                            reaction_emojis=REACTION_EMOJIS,
                            reaction_types=REACTION_TYPES,
-                           recent_reactions=recent_reactions,
+                           recent_reactions=recent_reactions, # Pass stats for new elements
                            recent_comments=recent_comments,
                            people_nearby=people_nearby,
                            active_cities=active_cities,
