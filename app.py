@@ -111,6 +111,71 @@ def feed():
 
     current_user_id = session.get('user_id')
     params = []
+    recent_reactions = []
+    recent_comments = []
+    people_nearby = []
+
+    if current_user_id:
+        recent_reactions = query_db("""
+            SELECT u.username, p.id AS post_id
+            FROM reactions r
+            JOIN posts p ON p.id = r.post_id
+            JOIN users u ON u.id = r.user_id
+            WHERE p.user_id = ? AND r.user_id != ?
+            ORDER BY r.id DESC
+            LIMIT 2
+        """, (current_user_id, current_user_id)) or []
+
+        recent_comments = query_db("""
+            SELECT u.username, p.id AS post_id
+            FROM comments c
+            JOIN posts p ON p.id = c.post_id
+            JOIN users u ON u.id = c.user_id
+            WHERE p.user_id = ? AND c.user_id != ?
+            ORDER BY c.created_at DESC
+            LIMIT 2
+        """, (current_user_id, current_user_id)) or []
+
+    active_cities = query_db("""
+        SELECT MIN(location) AS location, COUNT(*) AS activity_count
+        FROM (
+            SELECT TRIM(u.location) AS location
+            FROM posts p
+            JOIN users u ON u.id = p.user_id
+            WHERE datetime(p.created_at) >= datetime('now', '-7 days')
+              AND u.location IS NOT NULL
+              AND TRIM(u.location) != ''
+
+            UNION ALL
+
+            SELECT TRIM(u.location) AS location
+            FROM comments c
+            JOIN users u ON u.id = c.user_id
+            WHERE datetime(c.created_at) >= datetime('now', '-7 days')
+              AND u.location IS NOT NULL
+              AND TRIM(u.location) != ''
+        ) AS activity
+        GROUP BY LOWER(location)
+        ORDER BY activity_count DESC, location COLLATE NOCASE ASC
+        LIMIT 5
+    """) or []
+
+    if current_user_id:
+        current_user = query_db(
+            'SELECT location FROM users WHERE id = ?',
+            (current_user_id,),
+            one=True
+        )
+
+        if current_user and current_user['location'] and current_user['location'].strip():
+            people_nearby = query_db("""
+                SELECT id, username, location
+                FROM users
+                WHERE LOWER(TRIM(location)) = LOWER(TRIM(?))
+                AND id != ?
+                ORDER BY username
+                LIMIT 5
+            """, (current_user['location'], current_user_id)) or []
 
     #  2. Build the Query 
     where_clause = ""
@@ -199,7 +264,12 @@ def feed():
                            page=page, # Pass current page number
                            per_page=POSTS_PER_PAGE, # Pass items per page
                            reaction_emojis=REACTION_EMOJIS,
-                           reaction_types=REACTION_TYPES)
+                           reaction_types=REACTION_TYPES,
+                           recent_reactions=recent_reactions,
+                           recent_comments=recent_comments,
+                           people_nearby=people_nearby,
+                           active_cities=active_cities,
+    )
 
 @app.route('/posts/new', methods=['POST'])
 def add_post():
