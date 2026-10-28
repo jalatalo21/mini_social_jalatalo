@@ -82,7 +82,20 @@
         <li class="card shadow-none p-2 mt-2">
           <div class="d-flex justify-content-between">
             <div>
-              <strong><a href="/u/{{ comment.username }}">{{ user_display(comment.username) }}</a></strong>
+              <strong>
+                <a href="/u/{{ comment.username }}">
+                  {{ user_display(comment.username) }}
+                </a>
+
+                {% if comment.has_reputation_warning %}
+                <span
+                  class="text-danger ms-1"
+                  title="High content-moderation risk"
+                  aria-label="High content-moderation risk">
+                  ⚠
+                </span>
+                {% endif %}
+              </strong>
               <p class="mb-0">{{ comment.content }}</p>
               
             

@@ -1,5 +1,13 @@
 {% extends "base.html.j2" %}
 {% block content %}
+{% if user.has_reputation_warning %}
+<div class="alert alert-danger" role="alert">
+    <strong>⚠ Community reputation warning</strong>
+    <p class="mb-0">
+        This account has a high content-moderation risk score.
+    </p>
+</div>
+{% endif %}
 {% from "macros/user_macros.html.j2" import user_display%}
 
 <div class="container mt-5">

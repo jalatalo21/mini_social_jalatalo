@@ -247,10 +247,12 @@ def feed():
         comments_raw = query_db('SELECT c.id, c.content, c.created_at, u.username, u.id as user_id FROM comments c JOIN users u ON c.user_id = u.id WHERE c.post_id = ? ORDER BY c.created_at ASC', (post['id'],))
         post_dict = dict(post)
         post_dict['content'], _ = moderate_content(post_dict['content'])
+        post_dict['has_reputation_warning'] = has_reputation_warning(post_dict['user_id'])
         comments_moderated = []
         for comment in comments_raw:
             comment_dict = dict(comment)
             comment_dict['content'], _ = moderate_content(comment_dict['content'])
+            comment_dict['has_reputation_warning'] = has_reputation_warning(comment_dict['user_id'])
             comments_moderated.append(comment_dict)
         posts_data.append({
             'post': post_dict,
@@ -351,6 +353,7 @@ def user_profile(username):
         abort(404)
 
     user = dict(user_raw)
+    user['has_reputation_warning'] = has_reputation_warning(user['id'])
     moderated_bio, _ = moderate_content(user.get('profile', ''))
     user['profile'] = moderated_bio
 
@@ -441,6 +444,7 @@ def post_detail(post_id):
     #  Moderation for the Main Post 
     # Convert the raw database row to a mutable dictionary
     post = dict(post_raw)
+    post['has_reputation_warning'] = has_reputation_warning(post['user_id'])
     # Unpack the tuple from moderate_content, we only need the moderated content string here
     moderated_post_content, _ = moderate_content(post['content'])
     post['content'] = moderated_post_content
@@ -459,6 +463,7 @@ def post_detail(post_id):
     comments = [] # Create a new list for the moderated comments
     for comment_raw in comments_raw:
         comment = dict(comment_raw) # Convert to a dictionary
+        comment['has_reputation_warning'] = has_reputation_warning(comment['user_id'])
         # Moderate the content of each comment
         print(comment['content'])
         moderated_comment_content, _ = moderate_content(comment['content'])
@@ -957,11 +962,114 @@ def user_risk_analysis(user_id):
             password: admin
         Then, navigate to the /admin endpoint. (http://localhost:8080/admin)
     """
-    
-    score = 0
 
-    return score;
+    # Get the user's profile and account creation date
+    user = query_db(
+        'SELECT id, profile, created_at FROM users WHERE id = ?',
+        (user_id,),
+        one=True
+    )
 
+    if not user:
+        return 0.0
+
+    # Calculate the profile content score
+    _, profile_score = moderate_content(user['profile'] or '')
+
+    # Calculate the average content score of the user's posts
+    posts = query_db(
+        'SELECT content FROM posts WHERE user_id = ?',
+        (user_id,)
+    ) or []
+
+    post_scores = [
+        moderate_content(post['content'] or '')[1]
+        for post in posts
+    ]
+
+    average_post_score = (
+        sum(post_scores) / len(post_scores)
+        if post_scores else 0.0
+    )
+
+    # Calculate the average content score of the user's comments
+    comments = query_db(
+        'SELECT content FROM comments WHERE user_id = ?',
+        (user_id,)
+    ) or []
+
+    comment_scores = [
+        moderate_content(comment['content'] or '')[1]
+        for comment in comments
+    ]
+
+    average_comment_score = (
+        sum(comment_scores) / len(comment_scores)
+        if comment_scores else 0.0
+    )
+
+    # Combine scores using the required weights
+    content_risk_score = (
+        profile_score
+        + (average_post_score * 3)
+        + average_comment_score
+    )
+
+    # Calculate the account age in days
+    account_created = user['created_at']
+
+    # Handle timestamps returned as strings
+    if isinstance(account_created, str):
+        account_created = datetime.fromisoformat(account_created)
+
+    if account_created.tzinfo is not None:
+        current_time = datetime.now(account_created.tzinfo)
+    else:
+        current_time = datetime.utcnow()
+
+    account_age_days = (current_time - account_created).days
+
+    # Apply the account age multiplier
+    if account_age_days < 7:
+        content_risk_score *= 1.5
+    elif account_age_days < 30:
+        content_risk_score *= 1.2
+
+    # Cap the final risk score at 5
+    return float(min(content_risk_score, 5.0))
+
+# Reputation system (Design Claim 26)
+def has_reputation_warning(user_id):
+    """
+    Return True if a user has at least 5 posts/comments and a user risk score of 5.0.
+    """
+
+    # Cache results during the current request to avoid recalculating the same user's score multiple times
+    cache = getattr(g, '_reputation_warning_cache', None)
+    if cache is None:
+        cache = {}
+        g._reputation_warning_cache = cache
+
+    if user_id in cache:
+        return cache[user_id]
+
+    # Count content authored by this user, not comments received
+    activity = query_db("""
+        SELECT
+            (SELECT COUNT(*) FROM posts WHERE user_id = ?) +
+            (SELECT COUNT(*) FROM comments WHERE user_id = ?)
+            AS total_activity
+    """, (user_id, user_id), one=True)
+
+    # Require at least five total posts and comments
+    if not activity or activity['total_activity'] < 5:
+        cache[user_id] = False
+        return False
+
+    # User risk scores are capped at 5 by the existing function
+    cache[user_id] = user_risk_analysis(user_id) >= 5.0
+
+    return cache[user_id]
     
 # Assignment 2.1
 def moderate_content(content):
@@ -981,9 +1089,91 @@ def moderate_content(content):
     Then, navigate to the /admin endpoint. (http://localhost:8080/admin)
     """
 
+    if content is None:
+        return "", 0.0
+
+    content = str(content)
     moderated_content = content
-    score = 0
-    
+    score = 0.0
+
+    # Tier 1 words cause immediate content removal
+    for word in TIER1_WORDS:
+        if word and re.search(
+            r"\b" + re.escape(word) + r"\b",
+            content,
+            re.IGNORECASE
+        ):
+            return "[content removed due to severe violation]", 5.0
+
+    # Tier 2 phrases cause immediate spam/scam removal
+    for phrase in TIER2_PHRASES:
+        if phrase and re.search(
+            r"(?<!\w)" + re.escape(phrase) + r"(?!\w)",
+            content,
+            re.IGNORECASE
+        ):
+            return "[content removed due to spam/scam policy]", 5.0
+
+    # Replace each Tier 3 word with asterisks. Add 2.0 points for every occurrence
+    tier3_words = [
+        word for word in TIER3_WORDS if word
+    ]
+
+    if tier3_words:
+        tier3_pattern = re.compile(
+            r"(?<!\w)(?:"
+            + "|".join(
+                re.escape(word)
+                for word in sorted(tier3_words, key=len, reverse=True)
+            )
+            + r")(?!\w)",
+            re.IGNORECASE
+        )
+
+        matches = list(tier3_pattern.finditer(moderated_content))
+        score += 2.0 * len(matches)
+
+        moderated_content = tier3_pattern.sub(
+            lambda match: "*" * len(match.group(0)),
+            moderated_content
+        )
+
+    # Replace external URLs with [link removed]. Add 2 points for each detected URL
+    url_pattern = re.compile(
+        r"""(?i)\b(?:https?://|www\.)[^\s<>"']+|(?<![@\w])(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}(?:/[^\s<>"']*)?"""
+    )
+
+    url_matches = list(url_pattern.finditer(moderated_content))
+    score += 2.0 * len(url_matches)
+
+    def replace_url(match):
+        # Preserve punctuation following a URL
+        url = match.group(0)
+        trailing_punctuation = ""
+
+        while url and url[-1] in ".,!?;:)]":
+            trailing_punctuation = url[-1] + trailing_punctuation
+            url = url[:-1]
+
+        return "[link removed]" + trailing_punctuation
+
+    moderated_content = url_pattern.sub(
+        replace_url,
+        moderated_content
+    )
+
+    # Add 0.5 points for excessive capitalization
+    # Count alphabetic characters in the original content
+    letters = [char for char in content if char.isalpha()]
+
+    if len(letters) > 15:
+        uppercase_count = sum(
+            char.isupper() for char in letters
+        )
+
+        if uppercase_count / len(letters) > 0.70:
+            score += 0.5
+
     return moderated_content, score
 
 # Coding Assignment #3
