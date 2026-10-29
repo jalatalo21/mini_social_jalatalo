@@ -1,0 +1,111 @@
+{% extends "base.html.j2" %}
+
+{% block content %}
+
+<div class="container mt-4">
+
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <h2>Introductions</h2>
+        <a href="{{ url_for('feed') }}"class="btn btn-sm btn-secondary ms-auto">Back to feed</a>
+    </div>
+
+    <p class="text-muted">
+        Meet new members of the community, discover shared interests,
+        and start conversations.
+    </p>
+
+    {% if current_user_id and not has_introduced %}
+    <div class="card shadow-sm mb-4">
+        <div class="card-body">
+            <h5 class="card-title">New here? Introduce yourself!</h5>
+
+            <p>
+                Tell the community a little about yourself, your interests,
+                or what brings you here. Other members can read your
+                introduction and start a conversation.
+            </p>
+
+            <form method="post"
+                  action="{{ url_for('introductions') }}">
+
+                <div class="mb-3">
+                    <label for="introduction" class="form-label">
+                        Your introduction
+                    </label>
+
+                    <textarea
+                        id="introduction"
+                        name="introduction"
+                        class="form-control"
+                        rows="4"
+                        maxlength="2000"
+                        placeholder="Hi! I'm new here and I enjoy..."
+                        required></textarea>
+                </div>
+
+                <button type="submit" class="btn btn-primary">
+                    Post introduction
+                </button>
+
+            </form>
+        </div>
+    </div>
+
+    {% elif current_user_id and has_introduced %}
+    <div class="alert alert-info">
+        You've already introduced yourself. Browse other introductions
+        and start a conversation!
+    </div>
+    {% endif %}
+
+    <h4 class="border-bottom pb-2 mb-3">Meet the community</h4>
+
+    {% if introductions %}
+
+        {% for post in introductions %}
+        <div class="card shadow-sm mb-3">
+
+            <div class="card-body">
+
+                <h5 class="card-title">
+                    <a href="{{ url_for(
+                        'user_profile',
+                        username=post['username']
+                    ) }}">
+                        @{{ post['username'] }}
+                    </a>
+                </h5>
+
+                <p class="text-muted small">
+                    {{ post['created_at'] }}
+                </p>
+
+                <p class="card-text"
+                   style="white-space: pre-wrap;">{{ post['introduction_text'] }}</p>
+
+                <a href="{{ url_for(
+                    'post_detail',
+                    post_id=post['id']
+                ) }}"
+                   class="btn btn-sm btn-light show-comments-btn">
+                    View post and comment
+                </a>
+
+            </div>
+        </div>
+        {% endfor %}
+
+    {% else %}
+
+        <div class="text-center py-4">
+            <h5>Be the first to introduce yourself!</h5>
+            <p class="text-muted">
+                This is a great place to start meeting other members.
+            </p>
+        </div>
+
+    {% endif %}
+
+</div>
+
+{% endblock %}

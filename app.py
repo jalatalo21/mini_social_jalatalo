@@ -200,6 +200,7 @@ def feed():
                 SELECT post_id, COUNT(*) as total_reactions FROM reactions GROUP BY post_id
             ) r ON p.id = r.post_id
             {where_clause}
+            AND LOWER(LTRIM(p.content)) NOT LIKE '#introduction%'
             ORDER BY total_reactions DESC, p.created_at DESC
             LIMIT ? OFFSET ?
         """
@@ -213,6 +214,7 @@ def feed():
             FROM posts p
             JOIN users u ON p.user_id = u.id
             {where_clause}
+            AND LOWER(LTRIM(p.content)) NOT LIKE '#introduction%'
             ORDER BY p.created_at DESC
             LIMIT ? OFFSET ?
         """
@@ -935,6 +937,89 @@ def admin_delete_comment(comment_id):
 def rules():
     return render_template('rules.html.j2')
 
+@app.route('/introductions', methods=['GET', 'POST'])
+def introductions():
+    current_user_id = session.get('user_id')
+
+    # Let logged in users publish one introduction
+    if request.method == 'POST':
+        if not current_user_id:
+            return redirect(url_for('introductions'))
+
+        introduction_text = request.form.get('introduction', '').strip()
+
+        # Avoid duplicate markers if the user typed one themselves
+        introduction_text = re.sub(
+            r'^\s*#introduction\b\s*',
+            '',
+            introduction_text,
+            count=1,
+            flags=re.IGNORECASE
+        ).strip()
+
+        if introduction_text:
+            db = get_db()
+            db.execute("""
+                INSERT INTO posts (user_id, content, created_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+            """, (
+                current_user_id,
+                '#introduction ' + introduction_text
+            ))
+            db.commit()
+
+        return redirect(url_for('introductions'))
+
+    # Show introductions, newest first
+    introduction_rows = query_db("""
+        SELECT p.id, p.user_id, p.content, p.created_at, u.username
+        FROM posts p
+        JOIN users u ON u.id = p.user_id
+        WHERE LOWER(LTRIM(p.content)) LIKE '#introduction%'
+        ORDER BY datetime(p.created_at) DESC, p.id DESC
+        LIMIT 100
+    """) or []
+
+    introductions_list = []
+
+    for row in introduction_rows:
+        post = dict(row)
+
+        # Apply the existing content moderation function
+        moderated_content, _ = moderate_content(post['content'] or '')
+
+        # Hide the internal marker from the introduction display
+        post['introduction_text'] = re.sub(
+            r'^\s*#introduction\b\s*',
+            '',
+            moderated_content,
+            count=1,
+            flags=re.IGNORECASE
+        ).strip()
+
+        introductions_list.append(post)
+
+    # Check whether the current user has already introduced themselves
+    has_introduced = False
+
+    if current_user_id:
+        existing_intro = query_db("""
+            SELECT id
+            FROM posts
+            WHERE user_id = ?
+              AND LOWER(LTRIM(content)) LIKE '#introduction%'
+            LIMIT 1
+        """, (current_user_id,), one=True)
+
+        has_introduced = existing_intro is not None
+
+    return render_template(
+        'introductions.html.j2',
+        introductions=introductions_list,
+        current_user_id=current_user_id,
+        has_introduced=has_introduced
+    )
+
 @app.template_global()
 def loop_color(user_id):
     # Generate a pastel color based on user_id hash
@@ -1198,9 +1283,124 @@ def recommend(user_id, filter_following):
     - https://www.researchgate.net/publication/227268858_Recommender_Systems_Handbook
     """
 
-    recommended_posts = {} 
+    if not user_id:
+        return []
 
-    return recommended_posts;
+    positive_reactions = {
+        'like',
+        'love',
+        'haha',
+        'wow'
+    }
+
+    # Get the user's reactions and the posts they reacted to
+    reactions = query_db("""
+        SELECT r.post_id, r.reaction_type, p.content, p.user_id
+        FROM reactions r
+        JOIN posts p ON p.id = r.post_id
+        WHERE r.user_id = ?
+    """, (user_id,)) or []
+
+    # Never recommend a post the user already reacted to
+    engaged_post_ids = {r['post_id'] for r in reactions}
+
+    # Use positively reacted posts to learn the user's interests
+    liked_posts = [
+        r for r in reactions
+        if str(r['reaction_type'] or '').strip().lower()
+        in positive_reactions
+    ]
+
+    stop_words = {
+        'the', 'and', 'for', 'that', 'this', 'with', 'you',
+        'are', 'was', 'have', 'has', 'from', 'but', 'not',
+        'your', 'about', 'just', 'they', 'their', 'what',
+        'when', 'who', 'will', 'would', 'could', 'into'
+    }
+
+    def get_words(text):
+        return {
+            word for word in re.findall(
+                r'\b[a-z0-9]{3,}\b', (text or '').lower()
+            )
+            if word not in stop_words
+        }
+
+    interest_counts = {}
+    liked_author_ids = set()
+
+    for post in liked_posts:
+        liked_author_ids.add(post['user_id'])
+
+        # Count each word at most once per liked post
+        for word in get_words(post['content']):
+            interest_counts[word] = interest_counts.get(word, 0) + 1
+
+    # Find users followed by the current user
+    followed_rows = query_db("""
+        SELECT followed_id
+        FROM follows
+        WHERE follower_id = ?
+    """, (user_id,)) or []
+
+    followed_ids = {row['followed_id'] for row in followed_rows}
+
+    # Get complete post records, including the author's username
+    candidates = query_db("""
+        SELECT p.*, u.username
+        FROM posts p
+        JOIN users u ON u.id = p.user_id
+        WHERE p.user_id != ?
+        AND LOWER(LTRIM(p.content)) NOT LIKE '#introduction%'
+        ORDER BY datetime(p.created_at) DESC, p.id DESC
+    """, (user_id,)) or []
+
+    ranked_posts = []
+
+    for chronological_order, post in enumerate(candidates):
+        post_id = post['id']
+        author_id = post['user_id']
+
+        # Skip posts already reacted to
+        if post_id in engaged_post_ids:
+            continue
+
+        # Apply the optional followed-users filter
+        if filter_following and author_id not in followed_ids:
+            continue
+
+        words = get_words(post['content'])
+
+        # Score similarity to positively reacted to posts
+        matching_words = words.intersection(interest_counts)
+
+        content_score = (
+            2.0 * sum(interest_counts[word] for word in matching_words)
+            / max(1, len(words) ** 0.5)
+        )
+
+        score = content_score
+
+        # Give followed authors a boost
+        if author_id in followed_ids:
+            score += 1.0
+
+        # Also favour authors whose posts the user liked
+        if author_id in liked_author_ids:
+            score += 0.5
+
+        ranked_posts.append(
+            (score, chronological_order, post)
+        )
+
+    # Select the five most relevant candidates
+    ranked_posts.sort(key=lambda item: item[0], reverse=True)
+    selected = ranked_posts[:5]
+
+    # Return those selected posts in reverse-chronological order
+    selected.sort(key=lambda item: item[1])
+
+    return [post for score, order, post in selected]
 
 if __name__ == '__main__':
     app.run(debug=True, port=8080)

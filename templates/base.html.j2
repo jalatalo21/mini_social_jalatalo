@@ -107,6 +107,23 @@
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz" crossorigin="anonymous"></script>
 
 {% include "footer.html.j2" %}
+<script>
+async function copyLink(button) {
+    const url = button.dataset.copyUrl;
+    const originalText = button.textContent.trim();
+
+    try {
+        await navigator.clipboard.writeText(url);
+        button.textContent = "Copied!";
+
+        setTimeout(() => {
+            button.textContent = originalText;
+        }, 1500);
+    } catch (error) {
+        window.prompt("Copy this link:", url);
+    }
+}
+</script>
 </body>
 </html>
 <script>

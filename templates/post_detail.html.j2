@@ -61,6 +61,13 @@
           </ul>
         </div>
         {% endif %}
+        <button
+          type="button"
+          class="btn btn-sm btn-secondary ms-auto"
+          data-copy-url="{{ url_for('post_detail', post_id=post['id'], _external=True) }}"
+          onclick="copyLink(this)">
+          Copy link
+        </button>
       </div>
 
       <hr>
